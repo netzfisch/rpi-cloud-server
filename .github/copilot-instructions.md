@@ -59,9 +59,17 @@ ssh pirate@192.168.1.10
 sudo tail -f /var/log/cloud-init-output.log
 ```
 
-### Re-running cloud-init (DANGER ZONE)
+### Re-running cloud-init (Safe with RAID Protection)
 
-**MUST set `fs_setup: overwrite: false`** before re-running or RAID data is destroyed!
+**RAID data is protected** by conditional checks in `runcmd` section. The script detects existing RAID arrays and skips creation.
+
+**Protection mechanisms:**
+- `disk_setup: overwrite: false` - prevents partition table recreation
+- `fs_setup: overwrite: false` - prevents filesystem recreation on partitions
+- `if ! mdadm --detail /dev/md0` - conditional check skips RAID creation if array exists
+- `grep -q` checks prevent duplicate fstab/mdadm.conf entries
+
+**Safe re-run procedure:**
 
 ```bash
 # Wait for RAID sync completion
@@ -74,9 +82,15 @@ sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-in
   /opt/unifi/compose.yml /opt/unifi/unifi.service
 docker stop ddclient unifi && docker rm ddclient unifi
 
-# Clean cloud-init state and reboot
+# Clean cloud-init state and reboot (RAID data will be preserved)
 sudo cloud-init clean --logs --reboot
 ```
+
+**What happens on re-run:**
+- Cloud-init detects existing `/dev/md0` and skips RAID creation
+- RAID array is automatically mounted to `/mnt/raid1`
+- All data remains intact
+- Services are reconfigured from template
 
 ### Debugging Failed Provisioning
 

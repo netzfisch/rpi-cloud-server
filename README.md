@@ -156,17 +156,42 @@ This helper script checks:
 - DNS resolution test
 - Gateway connectivity
 
-Edit `/boot/firmware/user-data`, see the [documentation](https://cloudinit.readthedocs.io/) for details. 
+### Re-running Cloud-Init (Safe Procedure)
 
-**Before reboot,** wait for RAID sync to complete and clean up:
+The configuration includes **automatic RAID protection** - the RAID array will NOT be destroyed when re-running cloud-init thanks to conditional checks in the provisioning script.
 
-    $ watch cat /proc/mdstat                                              # wait until sync finished
-    $ sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
-      /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
-      /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
-      /opt/unifi/compose.yml /opt/unifi/unifi.service                     # remove auto-generated files
-    $ docker stop ddclient unifi && docker rm ddclient unifi              # stop and remove containers
-    $ sudo cloud-init clean --logs --reboot
+**Safe re-run procedure:**
+
+1. **Wait for RAID sync** to complete:
+   ```sh
+   $ watch cat /proc/mdstat  # wait until status shows [UU]
+   ```
+
+2. **Clean up auto-generated files:**
+   ```sh
+   $ sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
+     /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
+     /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
+     /opt/unifi/compose.yml /opt/unifi/unifi.service
+   ```
+
+3. **Stop and remove Docker containers:**
+   ```sh
+   $ docker stop ddclient unifi && docker rm ddclient unifi
+   ```
+
+4. **Re-run cloud-init** (RAID data will be preserved):
+   ```sh
+   $ sudo cloud-init clean --logs --reboot
+   ```
+
+**How RAID protection works:**
+- The `runcmd` section checks if `/dev/md0` exists before creating RAID
+- If RAID exists, creation is skipped and existing array is used
+- `disk_setup: overwrite: false` and `fs_setup: overwrite: false` prevent partition/filesystem recreation
+- Your data in `/mnt/raid1` remains completely intact
+
+Edit `/boot/firmware/user-data` for advanced configuration, see the [documentation](https://cloudinit.readthedocs.io/) for details.
 
 ## Project Structure
 

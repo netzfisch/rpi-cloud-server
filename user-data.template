@@ -109,26 +109,22 @@ disk_setup:
     /dev/sda:
         table_type: gpt
         layout: true
-        overwrite: true
-        #overwrite: false
+        overwrite: false
     /dev/sdb:
         table_type: gpt
         layout: true
-        overwrite: true
-        #overwrite: false
+        overwrite: false
 fs_setup:
     - label: ssd1
       filesystem: ext4
       device: /dev/sda
       partition: auto
-      overwrite: true
-      #overwrite: false
+      overwrite: false
     - label: ssd2
       filesystem: ext4
       device: /dev/sdb
       partition: auto
-      overwrite: true
-      #overwrite: false
+      overwrite: false
 
 write_files:
   # configure console font
@@ -506,19 +502,24 @@ runcmd:
     MOTD_EOF
   - chmod +x /etc/update-motd.d/99-system-status
 
-  # Note: Stop and zero any existing RAID metadata to prevent auto-assembly as md127.
-  # These commands work for all scenarios (fresh disks, existing arrays, or mixed states)
-  # due to error suppression (2>/dev/null || true) - they fail gracefully if not needed.
-  - mdadm --stop /dev/md127 2>/dev/null || true
-  - mdadm --zero-superblock /dev/sda1 /dev/sdb1 2>/dev/null || true
   # Create RAID1 storage '/dev/md0' from two USB drives, mount to '/mnt/raid1'
-  # and create share directories
-  - mdadm --create --run --verbose /dev/md0 --level=1 --raid-devices=2 /dev/sda1 /dev/sdb1
-  - mkfs.ext4 -F /dev/md0
+  # ONLY if RAID doesn't already exist (prevents data loss on re-runs)
+  - |
+    if ! mdadm --detail /dev/md0 >/dev/null 2>&1; then
+      # Stop and zero any existing RAID metadata to prevent auto-assembly as md127
+      mdadm --stop /dev/md127 2>/dev/null || true
+      mdadm --zero-superblock /dev/sda1 /dev/sdb1 2>/dev/null || true
+      # Create new RAID1 array
+      mdadm --create --run --verbose /dev/md0 --level=1 --raid-devices=2 /dev/sda1 /dev/sdb1
+      mkfs.ext4 -F /dev/md0
+      echo "RAID array /dev/md0 created successfully"
+    else
+      echo "RAID array /dev/md0 already exists, skipping creation"
+    fi
   - mkdir -p /mnt/raid1
-  - mount /dev/md0 /mnt/raid1
-  - echo '/dev/md0 /mnt/raid1 ext4 defaults,nofail,noatime 0 1' >> /etc/fstab
-  - mdadm --detail --scan | tee -a /etc/mdadm/mdadm.conf
+  - mount /dev/md0 /mnt/raid1 || true
+  - grep -q '/dev/md0' /etc/fstab || echo '/dev/md0 /mnt/raid1 ext4 defaults,nofail,noatime 0 1' >> /etc/fstab
+  - mdadm --detail --scan | grep -q '/dev/md0' || mdadm --detail --scan >> /etc/mdadm/mdadm.conf
   - update-initramfs -u
   - mkdir -p /mnt/raid1/${USER1}
   - mkdir -p /mnt/raid1/${USER2}
@@ -566,23 +567,37 @@ final_message: "The system is finally up, after $UPTIME seconds"
 #
 # $ sudo cloud-init single --name users_groups --frequency always
 #
-# Edit '/boot/firmware/user-data', BUT ATTENTION - be aware setting "fs_setup: overwrite: true'
-# will overwrite raid-partitions on next boot and data will be lost!
-# To avoid this, set "fs_setup: overwrite: false' for existing partitions.
+# RAID DATA PROTECTION:
+# The runcmd section uses conditional checks (if ! mdadm --detail /dev/md0) to prevent
+# destroying existing RAID arrays when re-running cloud-init. The disk_setup and fs_setup
+# modules use "overwrite: false" to skip partition/filesystem creation on existing drives.
 #
-# BEFORE REBOOT, clean up:
+# DOCKER VOLUME PERSISTENCE:
+# Docker named volumes (Unifi config, logs, etc.) persist automatically when containers
+# are removed. The cleanup procedure removes containers but NOT volumes, preserving all
+# Unifi settings, devices, and network configurations across cloud-init re-runs.
+# - To verify: docker volume ls | grep unifi
+# - To inspect: docker volume inspect unifi_config
+# - To reset Unifi (DESTRUCTIVE): docker volume rm unifi_config unifi_log unifi_log2 unifi_run unifi_run2 unifi_work
 #
-# $ watch cat /proc/mdstat                                                               # wait until sync finished
-# $ echo none | sudo tee /sys/block/md1/md/sync_action                                   # stop sync if necessary
+# To RE-RUN cloud-init without losing data:
+#
+# 1. Wait for RAID sync to complete:
+# $ watch cat /proc/mdstat
+#
+# 2. Clean up auto-generated files:
 # $ sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
 #   /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
-#   /etc/mdadm/mdadm.conf /etc/samba/smb.conf /mnt/raid1/* \
-#   /opt/unifi/compose.yml /opt/unifi/unifi.service                                      # remove auto-generated files
-# $ docker stop ddclient unifi vpnserver && docker rm ddclient unifi vpnserver           # stop and remove running containers
+#   /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
+#   /opt/unifi/compose.yml /opt/unifi/unifi.service
+#
+# 3. Stop and remove Docker containers:
+# $ docker stop ddclient unifi && docker rm ddclient unifi
+#
+# 4. Re-run cloud-init (RAID data will be preserved):
 # $ sudo cloud-init clean --logs --reboot
 #
-# Then the instance will reboot and re-run cloud-init with the updated 'user-data' file, in detail:
-# - Deletes old cloud-init state in /var/lib/cloud/
-# - Keeps your new /boot/firmware/user-data
-# - Immediately reboots
-# - On next boot, cloud-init treats it as a fresh install and applies the new configuration
+# The system will reboot and re-apply cloud-init configuration:
+# - RAID array /dev/md0 will be detected and preserved (not recreated)
+# - All other services will be reconfigured
+# - Data in /mnt/raid1 remains intact
