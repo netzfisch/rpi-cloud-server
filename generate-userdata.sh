@@ -48,6 +48,15 @@ REQUIRED_VARS=(
     STATIC_IP
     GATEWAY_IP
     DNS_SERVERS
+    VLAN_PRIVAT
+    VLAN_IOT
+    IOT_DHCP_START
+    IOT_DHCP_END
+    VLAN_GUEST
+    GUEST_DHCP_START
+    GUEST_DHCP_END
+    UPSTREAM_DNS_SERVER
+    DOMAIN
     DDNS_HOSTNAME
     DDNS_TOKEN
 )
@@ -101,10 +110,15 @@ validate_cloud_init_schema() {
 
     info "Validating cloud-init schema..."
 
-    if cloud-init schema --config-file "$OUTPUT" 2>&1 | grep -q "Valid schema"; then
+    # Capture full output including errors
+    validation_output=$(cloud-init schema --config-file "$OUTPUT" 2>&1)
+    
+    if echo "$validation_output" | grep -q "Valid schema"; then
         ok "Cloud-init schema validation passed"
     else
-        warn "Cloud-init schema validation failed (see errors above)"
+        warn "Cloud-init schema validation failed:"
+        echo "$validation_output"
+        echo ""
         info "You may still proceed, but check the configuration carefully"
     fi
 }

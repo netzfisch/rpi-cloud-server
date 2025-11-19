@@ -29,7 +29,12 @@ Data redundancy for server reliability. Two external USB drives (`/dev/sda`, `/d
 Isolation, easy updates, and portability. Three containers: `unifi` (network controller), `ddclient` (dynamic DNS), `vpnserver` (optional remote access).
 
 ### Network Configuration Strategy
-Static IP (`192.168.1.10`) via `/etc/dhcpcd.conf` written by cloud-init, not netplan. Gateway at `192.168.1.1` is likely another Pi running DNS/routing.
+VLAN-based network segmentation using netplan (cloud-init native `network:` module):
+- **Privat VLAN (untagged)**: `192.168.10.0/24` - Management network, Pi at `192.168.10.10`
+- **IoT VLAN 20**: `192.168.20.0/24` - IoT devices, Pi gateway at `192.168.20.1`
+- **Guest VLAN 30**: `192.168.30.0/24` - Guest network, Pi gateway at `192.168.30.1`
+
+The Pi serves as DHCP/DNS server via dnsmasq for IoT and Guest VLANs, forwarding DNS queries to upstream server. iptables provides NAT for WAN access and enforces isolation (IoT/Guest cannot access Privat network).
 
 ## Critical Workflows
 
@@ -63,7 +68,9 @@ sudo tail -f /var/log/cloud-init-output.log
 watch cat /proc/mdstat
 
 # Clean generated files
-sudo rm -R /etc/dhcpcd.conf /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
+sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
+  /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
+  /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
   /opt/unifi/compose.yml /opt/unifi/unifi.service
 docker stop ddclient unifi && docker rm ddclient unifi
 
@@ -84,6 +91,36 @@ sudo cloud-init single --name runcmd --frequency always
 # Verify RAID status
 cat /proc/mdstat
 mdadm --detail /dev/md0
+```
+
+### Debugging VLAN Networking
+
+```bash
+# Verify network interfaces and VLAN configuration
+ip addr show
+ip route
+
+# Check VLAN interfaces are up
+ip link show eth0
+ip link show eth0.20  # IoT VLAN
+ip link show eth0.30  # Guest VLAN
+
+# Verify iptables NAT and filtering rules
+iptables -L -n -v -t nat
+iptables -L -n -v -t filter
+
+# Check dnsmasq DHCP/DNS service
+systemctl status dnsmasq
+cat /var/lib/misc/dnsmasq.leases
+journalctl -u dnsmasq -n 50
+
+# Test DNS resolution
+dig @localhost example.com
+nslookup example.com localhost
+
+# Verify IP forwarding is enabled
+sysctl net.ipv4.ip_forward
+cat /proc/sys/net/ipv4/ip_forward
 ```
 
 ## Project-Specific Conventions
@@ -170,7 +207,8 @@ Configuration is managed via external secrets file:
 - `/var/log/cloud-init-output.log` → provisioning logs
 
 ### Access Points
-- SSH: `ssh pirate@192.168.1.10` (default password: `hypriot`, expires on first login)
-- Samba: `smb://192.168.1.10/[user1|user2|shared|public]`
-- Unifi: `https://192.168.1.10:8443`
+- SSH: `ssh pirate@192.168.10.10` (default password: `hypriot`, expires on first login)
+- Samba: `smb://192.168.10.10/[user1|user2|shared|public]`
+- Unifi: `https://192.168.10.10:8443`
 - Hostname: `liberty10.local` (via Avahi mDNS)
+

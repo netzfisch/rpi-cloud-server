@@ -30,6 +30,7 @@ $ cp secrets.env.example secrets.env
 - **Edit secrets.env** and replace ALL placeholder values with your actual configuration:
   - User credentials (admin password, Samba passwords)
   - Network settings (static IP, gateway, DNS servers)
+  - VLAN configuration (VLAN IDs, DHCP ranges, upstream DNS server)
   - Dynamic DNS hostname and token
 
 **IMPORTANT:** Never commit `secrets.env` to version control - it's already in `.gitignore`.
@@ -67,14 +68,46 @@ $ cp user-data /media/$USER/system-boot/user-data
 ```
 
 - Put the SD-Card back into the Raspberry and boot. The server will be **automatically provisioned** and set up - **repeatable and reliable** :-)
+
+## Network Topology
+
+The system implements **VLAN-based network segmentation** for enhanced security and organization:
+
+- **Privat VLAN (untagged)** - `192.168.10.0/24`: Management network for server administration
+  - Pi static IP: `192.168.10.10`
+  - Manual DHCP management via router (e.g., FritzBox)
+ 
+- **IoT VLAN 20** - `192.168.20.0/24`: Isolated network for IoT devices
+  - Pi gateway: `192.168.20.1`
+  - DHCP range: `192.168.20.50` - `192.168.20.200` (managed by dnsmasq)
+ 
+- **Guest VLAN 30** - `192.168.30.0/24`: Isolated network for guest access
+  - Pi gateway: `192.168.30.1`
+  - DHCP range: `192.168.30.50` - `192.168.30.200` (managed by dnsmasq)
+
+**Security Features:**
+- The Pi acts as DHCP/DNS server for IoT and Guest VLANs
+- iptables provides NAT for WAN access from all VLANs
+- Firewall rules enforce isolation: IoT and Guest VLANs **cannot** access Privat network
+- Management access (SSH, Samba, Unifi) only from Privat VLAN
+
+**Prerequisites:**
+- Network switch with VLAN support (802.1Q tagging)
+- VLAN configuration on upstream router/switch matching VLAN IDs
+
+## Automatic Provisioning
+
 - The system will automatically set up:
   - RAID1 storage with two external drives (/dev/sda, /dev/sdb)
     - **Note**: The provisioning script handles all RAID scenarios (fresh disks, existing arrays, or reused drives) by automatically cleaning any previous RAID metadata before creating the array. This ensures the RAID is always created as `md0` instead of auto-assembling as `md127`.
     - **CRITICAL WARNING**: Setting `fs_setup: overwrite: true` will destroy RAID data! Always set `overwrite: false` for existing partitions.
+  - VLAN networking with netplan (Privat/IoT/Guest segmentation)
+  - dnsmasq DHCP/DNS server for IoT and Guest VLANs
+  - iptables firewall with NAT and inter-VLAN isolation
   - Samba shares (user1, user2, shared, public)
   - Docker containers: **Unifi Controller** (network management) and **ddclient** (dynamic DNS)
-  - Custom MOTD with system status display
-- **First login**: SSH as `pirate@192.168.1.10` with password `hypriot`
+  - Custom MOTD with system status display (RAID, Docker, Samba, dnsmasq, DHCP leases)
+- **First login**: SSH as `pirate@192.168.10.10` with password `hypriot`
   - You will be prompted to change the password immediately
   - After changing the password, the session will close (this is expected)
   - Log in again with your new password
@@ -83,8 +116,8 @@ $ cp user-data /media/$USER/system-boot/user-data
   - set the update token for [rpi-dyndns](https://github.com/netzfisch/rpi-dyndns),
   - import/generate the secrets for [rpi-vpn-server](https://github.com/netzfisch/rpi-vpn-server), and
   - enable port forwarding at your firewall for the UDP ports 500 and 4500.
-- Access the system via SSH: `ssh pirate@192.168.1.10` (default password: hypriot, must change on first login)
-- Access Unifi Controller web UI: `https://192.168.1.10:8443`
+- Access the system via SSH: `ssh pirate@192.168.10.10` (default password: hypriot, must change on first login)
+- Access Unifi Controller web UI: `https://192.168.10.10:8443`
 - **Done!**
 
 ### Debugging
@@ -102,14 +135,37 @@ Check RAID status and system configuration:
     $ df -h /mnt/raid1
     $ docker ps
 
+Check VLAN networking:
+
+    $ ip addr show
+    $ ip route
+    $ systemctl status dnsmasq
+    $ cat /var/lib/misc/dnsmasq.leases
+    $ iptables -L -n -v -t nat
+    $ iptables -L -n -v -t filter
+
+Run comprehensive network diagnostics:
+
+    $ sudo check-network
+
+This helper script checks:
+- VLAN interface status (eth0, eth0.20, eth0.30)
+- dnsmasq DHCP/DNS service status and lease count
+- IP forwarding configuration
+- iptables NAT and FORWARD rules
+- DNS resolution test
+- Gateway connectivity
+
 Edit `/boot/firmware/user-data`, see the [documentation](https://cloudinit.readthedocs.io/) for details. 
 
 **Before reboot,** wait for RAID sync to complete and clean up:
 
-    $ watch cat /proc/mdstat                                                # wait until sync finished
-    $ sudo rm -R /etc/dhcpcd.conf /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
-      /opt/unifi/compose.yml /opt/unifi/unifi.service                       # remove auto-generated files
-    $ docker stop ddclient unifi && docker rm ddclient unifi                # stop and remove containers
+    $ watch cat /proc/mdstat                                              # wait until sync finished
+    $ sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
+      /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
+      /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
+      /opt/unifi/compose.yml /opt/unifi/unifi.service                     # remove auto-generated files
+    $ docker stop ddclient unifi && docker rm ddclient unifi              # stop and remove containers
     $ sudo cloud-init clean --logs --reboot
 
 ## Project Structure

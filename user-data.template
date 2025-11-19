@@ -85,17 +85,21 @@ packages:
 - byobu
 - ca-certificates
 - curl
+- dnsmasq
 - docker-ce
 - docker-ce-cli
 - containerd.io
 - docker-buildx-plugin
 - docker-compose-plugin
+- iptables-persistent
 - mc
 - mdadm
+- net-tools
 - samba
 - samba-common-bin
 - tmux
 - vim
+- vlan
 
 timezone: "Europe/Berlin"
 
@@ -141,30 +145,166 @@ write_files:
   #  permissions: '0644'
   #  owner: root:root
 
-  # configure static network interface
-  - content: |
-      # see configuration options via 'man dhcpcd.conf'
-      hostname
-      persistent
-      slaac private
-
-      interface eth0
-      static ip_address=${STATIC_IP}
-      # static ip6_address=fd51:42f8:caae:d92e::ff/64
-      static routers=${GATEWAY_IP}
-      static domain_name_servers=${DNS_SERVERS}
-    path: /etc/dhcpcd.conf
-
-  # configure midnight commander with lynx-like motion (system-wide)
-  - path: /etc/skel/.config/mc/ini
-    content: |
-      [Midnight-Commander]
-      use_internal_edit=true
-
-      [Panels]
-      navigate_with_arrows=true
+  # configure VLAN network segmentation with netplan
+  - path: /etc/netplan/50-cloud-init.yaml
     owner: root:root
     permissions: '0644'
+    content: |
+      network:
+        version: 2
+        ethernets:
+          eth0:
+            dhcp4: false
+            addresses:
+              - ${STATIC_IP}/24
+            routes:
+              - to: default
+                via: ${GATEWAY_IP}
+            nameservers:
+              dns: ${DNS_SERVERS}
+        vlans:
+          eth0.${VLAN_IOT}:
+            id: ${VLAN_IOT}
+            link: eth0
+            addresses:
+              - 192.168.${VLAN_IOT}.1/24
+          eth0.${VLAN_GUEST}:
+            id: ${VLAN_GUEST}
+            link: eth0
+            addresses:
+              - 192.168.${VLAN_GUEST}.1/24
+
+  # configure dnsmasq for VLAN DHCP/DNS services
+  - path: /etc/dnsmasq.d/${DOMAIN}.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # dnsmasq for VLAN network (DHCP+DNS) - IoT and Guest VLANs
+      domain=${DOMAIN}
+      expand-hosts
+      domain-needed
+      bogus-priv
+      no-resolv
+      server=${UPSTREAM_DNS_SERVER}
+      cache-size=2000
+      log-queries
+      log-dhcp
+
+      # VLAN IoT
+      interface=eth0.${VLAN_IOT}
+      dhcp-range=tag:eth0.${VLAN_IOT},${IOT_DHCP_START},${IOT_DHCP_END},24h
+      dhcp-option=tag:eth0.${VLAN_IOT},option:router,192.168.${VLAN_IOT}.1
+      dhcp-option=tag:eth0.${VLAN_IOT},option:dns-server,${STATIC_IP}
+
+      # VLAN Guest
+      interface=eth0.${VLAN_GUEST}
+      dhcp-range=tag:eth0.${VLAN_GUEST},${GUEST_DHCP_START},${GUEST_DHCP_END},24h
+      dhcp-option=tag:eth0.${VLAN_GUEST},option:router,192.168.${VLAN_GUEST}.1
+      dhcp-option=tag:eth0.${VLAN_GUEST},option:dns-server,${STATIC_IP}
+
+      # DHCP leases file
+      dhcp-leasefile=/var/lib/misc/dnsmasq.leases
+
+  # configure iptables firewall rules for VLAN routing and isolation
+  - path: /etc/iptables/rules.v4
+    owner: root:root
+    permissions: '0644'
+    content: |
+      *nat
+      :PREROUTING ACCEPT [0:0]
+      :INPUT ACCEPT [0:0]
+      :OUTPUT ACCEPT [0:0]
+      :POSTROUTING ACCEPT [0:0]
+      # NAT for IoT and Guest VLANs to WAN
+      -A POSTROUTING -s 192.168.${VLAN_IOT}.0/24 -o eth0 -j MASQUERADE
+      -A POSTROUTING -s 192.168.${VLAN_GUEST}.0/24 -o eth0 -j MASQUERADE
+      COMMIT
+
+      *filter
+      :INPUT ACCEPT [0:0]
+      :FORWARD DROP [0:0]
+      :OUTPUT ACCEPT [0:0]
+      # Allow established connections
+      -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+      # Allow IoT/Guest -> WAN (eth0)
+      -A FORWARD -i eth0.${VLAN_IOT} -o eth0 -j ACCEPT
+      -A FORWARD -i eth0.${VLAN_GUEST} -o eth0 -j ACCEPT
+      # Allow intra-VLAN traffic
+      -A FORWARD -s 192.168.${VLAN_IOT}.0/24 -d 192.168.${VLAN_IOT}.0/24 -j ACCEPT
+      -A FORWARD -s 192.168.${VLAN_GUEST}.0/24 -d 192.168.${VLAN_GUEST}.0/24 -j ACCEPT
+      # Block IoT -> Privat
+      -A FORWARD -s 192.168.${VLAN_IOT}.0/24 -d 192.168.${VLAN_PRIVAT}.0/24 -j DROP
+      # Block Guest -> Privat
+      -A FORWARD -s 192.168.${VLAN_GUEST}.0/24 -d 192.168.${VLAN_PRIVAT}.0/24 -j DROP
+      COMMIT
+
+  # helper script to display DHCP leases
+  - path: /usr/local/bin/show-dhcp-leases
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      LEASE_FILE="/var/lib/misc/dnsmasq.leases"
+      if [ ! -f "$LEASE_FILE" ]; then
+        echo "No dnsmasq lease file found"
+        exit 0
+      fi
+      printf "\n%-20s %-18s %-15s %-20s\n" "LEASE-TIME" "MAC" "IP" "HOSTNAME"
+      printf "%0.s-" {1..80}; printf "\n"
+      while read -r lease mac ip host _; do
+        ts=$(date -d @"$lease" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "$lease")
+        printf "%-20s %-18s %-15s %-20s\n" "$ts" "$mac" "$ip" "$host"
+      done < "$LEASE_FILE"
+      echo ""
+
+  # helper script to check VLAN network configuration
+  - path: /usr/local/bin/check-network
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Network configuration check for VLAN setup
+      set -e
+
+      echo "=== Interface status ==="
+      ip -br addr show eth0 eth0.${VLAN_IOT} eth0.${VLAN_GUEST} 2>/dev/null || echo "VLAN interfaces not yet configured"
+
+      echo ""
+      echo "=== dnsmasq status ==="
+      systemctl is-active --quiet dnsmasq && echo "dnsmasq: active" || echo "dnsmasq: NOT active"
+      if [ -f /var/lib/misc/dnsmasq.leases ]; then
+        lease_count=$(wc -l < /var/lib/misc/dnsmasq.leases)
+        echo "DHCP leases: $lease_count"
+      else
+        echo "No lease file found"
+      fi
+
+      echo ""
+      echo "=== IP forwarding ==="
+      if [ "$(cat /proc/sys/net/ipv4/ip_forward)" = "1" ]; then
+        echo "IP forwarding: enabled"
+      else
+        echo "IP forwarding: DISABLED (should be enabled)"
+      fi
+
+      echo ""
+      echo "=== iptables NAT rules ==="
+      iptables -t nat -L POSTROUTING -n -v 2>/dev/null | grep -E "MASQUERADE|Chain" || echo "No NAT rules found"
+
+      echo ""
+      echo "=== iptables FORWARD rules ==="
+      iptables -L FORWARD -n -v 2>/dev/null | grep -E "eth0|Chain" | head -10 || echo "No FORWARD rules found"
+
+      echo ""
+      echo "=== DNS resolution test ==="
+      dig @${STATIC_IP} example.org +short +time=2 2>/dev/null || echo "DNS query failed"
+
+      echo ""
+      echo "=== Gateway connectivity ==="
+      ping -c 2 -W 2 ${GATEWAY_IP} >/dev/null 2>&1 && echo "Gateway ${GATEWAY_IP}: reachable" || echo "Gateway ${GATEWAY_IP}: UNREACHABLE"
+
+      echo ""
+      echo "Done."
 
   # configure SAMBA shares
   - content: |
@@ -258,12 +398,33 @@ write_files:
     owner: root:root
     permissions: '0644'
 
+  # configure midnight commander with lynx-like motion (system-wide)
+  - path: /etc/skel/.config/mc/ini
+    content: |
+      [Midnight-Commander]
+      use_internal_edit=true
+
+      [Panels]
+      navigate_with_arrows=true
+    owner: root:root
+    permissions: '0644'
+
 
 # these commands will run once on first boot only
 runcmd:
   # pickup hostname-, network-changes
   - systemctl restart avahi-daemon
   - systemctl restart docker
+
+  # initialize VLAN networking
+  - modprobe 8021q || true
+  - sleep 2
+  - netplan apply || true
+  - sysctl -w net.ipv4.ip_forward=1
+  - grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+  - iptables-restore < /etc/iptables/rules.v4 || true
+  - systemctl enable --now dnsmasq || true
+  - netfilter-persistent save || true
 
   # configure MOTD - disable unwanted default scripts
   - chmod -x /etc/update-motd.d/10-help-text
@@ -325,6 +486,22 @@ runcmd:
         printf "  %-28s\n" "Samba: $samba_status"
     fi
 
+    # Line 5: dnsmasq status and DHCP leases
+    dnsmasq_status=$(systemctl is-active dnsmasq 2>/dev/null || echo "inactive")
+    if [ "$dnsmasq_status" = "active" ]; then
+        lease_count=$(wc -l < /var/lib/misc/dnsmasq.leases 2>/dev/null || echo "0")
+        if [ "$lease_count" -gt 0 ]; then
+            printf "  %-28s\n" "dnsmasq: $dnsmasq_status ($lease_count leases)"
+            /usr/local/bin/show-dhcp-leases 2>/dev/null | head -8
+        else
+            printf "  %-28s\n" "dnsmasq: $dnsmasq_status (0 leases)"
+        fi
+    else
+        printf "  %-28s\n" "dnsmasq: $dnsmasq_status"
+    fi
+
+    echo ""
+    echo "  Tip: Run 'sudo check-network' for detailed network diagnostics"
     echo ""
     MOTD_EOF
   - chmod +x /etc/update-motd.d/99-system-status
@@ -397,7 +574,9 @@ final_message: "The system is finally up, after $UPTIME seconds"
 #
 # $ watch cat /proc/mdstat                                                               # wait until sync finished
 # $ echo none | sudo tee /sys/block/md1/md/sync_action                                   # stop sync if necessary
-# $ sudo rm -R /etc/dhcpcd.conf /etc/mdadm/mdadm.conf /etc/samba/smb.conf /mnt/raid1/* \
+# $ sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
+#   /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
+#   /etc/mdadm/mdadm.conf /etc/samba/smb.conf /mnt/raid1/* \
 #   /opt/unifi/compose.yml /opt/unifi/unifi.service                                      # remove auto-generated files
 # $ docker stop ddclient unifi vpnserver && docker rm ddclient unifi vpnserver           # stop and remove running containers
 # $ sudo cloud-init clean --logs --reboot
