@@ -1,0 +1,258 @@
+# ============================================================================
+# Juniper EX2200-C-12P-2G Switch Configuration
+# ============================================================================
+# Default Credentials: root / (no password)
+# Management IP: Will be assigned via DHCP on VLAN 10 (Privat)
+# ============================================================================
+#
+# --- CONNECT WITH `tio` (Terminal I/O) ---
+# Connect to the console port at 9600 baud, 8N1 (default settings)
+# $ tio /dev/ttyUSB0 -b 9600
+# QUIT with `CTRL+t q`
+#
+# --- PASTING MULTIPLE LINES ---
+# To paste multiple configuration commands at once:
+# 1. Enter configuration mode: configure
+# 2. Paste all set/delete commands directly (comments starting with # are ignored)
+# 3. Type `commit` to apply changes
+# 4. Type `exit` to leave configuration mode
+#
+# NOTE: JunOS CLI accepts set/delete commands directly in configure mode
+# Comments (#) are automatically ignored by JunOS CLI
+#
+# --- FACTORY RESET PROCEDURE ---
+# WARNING: This erases all configuration!
+# 1. Boot into recovery mode (hold MODE button during power-on until amber LED blinks)
+# 2. At loader prompt, type:
+#    > boot -f
+# 3. After boot, run:
+#    > request system zeroize
+# 4. Confirm and wait for automatic reboot
+#
+# --- INITIAL ACCESS (after factory reset) ---
+# 1. Connect via console cable (9600 baud, 8N1)
+# 2. Login with username: root (no password required)
+# 3. Enter CLI mode:
+#    > cli
+#
+# --- SYSTEM ALARMS ---
+# Show current alarms:
+#    > show chassis alarms
+# NOTE: Alarms clear automatically when the underlying issue is resolved.
+# There is no manual clear command - fix the root cause instead.
+#
+# Common alarms and fixes:
+# - "Management Ethernet Link Down": Configure management VLAN interface (see config below)
+#   This alarm will clear once the vlan.10 interface gets an IP via DHCP
+# - After applying configuration with management interface, alarm clears in ~30 seconds
+#
+# --- VIEW CONFIGURATION ---
+# Show complete configuration:
+#    > show configuration
+# Show configuration in set commands format (compact):
+#    > show configuration | display set
+# Show configuration changes before committing:
+#    > show configuration | compare
+# Show specific sections:
+#    > show configuration vlans
+#    > show configuration interfaces
+#    > show configuration system
+# Show network/interface status:
+#    > show interfaces terse
+#    > show vlans
+#    > show ethernet-switching interfaces
+#    > show poe controller
+#    > show poe interface
+#
+# --- CHANGE ROOT PASSWORD (recommended) ---
+# configure
+# set system root-authentication plain-text-password
+# [Enter new password twice when prompted]
+# commit
+# exit
+#
+# --- SET DATE AND TIME ---
+# Show current date/time:
+#    > show system uptime
+# Set date and time (from operational mode, NOT configure mode):
+#    > set date YYYYMMDDHHMM.SS
+# Example: Set to November 22, 2025 14:30:00
+#    > set date 202511221430.00
+# Configure NTP server (recommended instead of manual time):
+#    > configure
+#    > set system ntp server 192.168.10.1
+#    > commit
+#    > exit
+#
+# --- DISCARD UNCOMMITTED CHANGES ---
+# If you made configuration changes but want to discard them before committing:
+# rollback 0
+# (This reverts to the last committed configuration)
+#
+# --- LOGOUT ---
+# exit
+# (or press Ctrl+D)
+#
+# --- LED INDICATORS ---
+# Use MODE button to cycle through LED display modes:
+# - SYS (System):    Green = Normal, Amber = System issue, Off = No power
+# - ALM (Alarm):     Amber = Active alarm, Off = No alarms
+# - SPD (Speed):     Shows port speed (1G/100M/10M) via port LEDs
+# - DX (Duplex):     Shows full/half duplex status via port LEDs
+# - EN (Enabled):    Shows enabled/disabled ports
+# - PoE (Power):     Shows PoE status per port (Green = PoE active, Off = No PoE)
+#
+# Press MODE button repeatedly to cycle through modes (current mode shown by front panel LED)
+
+# ============================================================================
+# CONFIGURATION COMMANDS START HERE
+# ============================================================================
+# Before pasting: Enter 'configure' mode
+# After pasting: Type 'commit' and 'exit'
+
+# ============================================================================
+# System Configuration
+# ============================================================================
+# System settings
+set system host-name juniper15
+set system services ssh root-login allow
+set system services ssh connection-limit 5
+
+# ============================================================================
+# VLAN Configuration
+# ============================================================================
+set vlans PRIVAT vlan-id 10
+set vlans IOT vlan-id 20
+set vlans GUEST vlan-id 30
+
+# Management interface with DHCP on VLAN 10 (Privat)
+# Note: VLAN must be created before configuring the management interface
+set interfaces vlan unit 10 family inet dhcp
+set vlans PRIVAT l3-interface vlan.10
+
+# ============================================================================
+# Uplink Configuration
+# ============================================================================
+# Uplink to FritzBox: ge-0/1/1 as access VLAN10 (Privat)
+delete interfaces ge-0/1/1
+set interfaces ge-0/1/1 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/1/1 unit 0 family ethernet-switching vlan members PRIVAT
+
+# ============================================================================
+# Raspberry Pi Trunk Port
+# ============================================================================
+# Raspberry Pi trunk on ge-0/1/0: allow VLANs 10/20/30; native VLAN = 10 (untagged for Pi)
+delete interfaces ge-0/1/0
+set interfaces ge-0/1/0 native-vlan-id 10
+set interfaces ge-0/1/0 unit 0 family ethernet-switching port-mode trunk
+set interfaces ge-0/1/0 unit 0 family ethernet-switching vlan members 10
+set interfaces ge-0/1/0 unit 0 family ethernet-switching vlan members 20
+set interfaces ge-0/1/0 unit 0 family ethernet-switching vlan members 30
+
+# ============================================================================
+# UniFi Access Point Trunk Ports (with PoE)
+# ============================================================================
+# UniFi APs as trunk ports on ge-0/0/0 through ge-0/0/3 (tagging 10/20/30)
+delete interfaces ge-0/0/0
+set interfaces ge-0/0/0 unit 0 family ethernet-switching port-mode trunk
+set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members 10
+set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members 20
+set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members 30
+set interfaces ge-0/0/0 ether-options speed 100m
+set interfaces ge-0/0/0 ether-options link-mode full-duplex
+delete interfaces ge-0/0/1
+set interfaces ge-0/0/1 unit 0 family ethernet-switching port-mode trunk
+set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members 10
+set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members 20
+set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members 30
+set interfaces ge-0/0/1 ether-options speed 100m
+set interfaces ge-0/0/1 ether-options link-mode full-duplex
+delete interfaces ge-0/0/2
+set interfaces ge-0/0/2 unit 0 family ethernet-switching port-mode trunk
+set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members 10
+set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members 20
+set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members 30
+set interfaces ge-0/0/2 ether-options speed 100m
+set interfaces ge-0/0/2 ether-options link-mode full-duplex
+delete interfaces ge-0/0/3
+set interfaces ge-0/0/3 unit 0 family ethernet-switching port-mode trunk
+set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members 10
+set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members 20
+set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members 30
+set interfaces ge-0/0/3 ether-options speed 100m
+set interfaces ge-0/0/3 ether-options link-mode full-duplex
+
+# ============================================================================
+# PoE Configuration
+# ============================================================================
+# Enable PoE for UniFi APs only
+set poe interface ge-0/0/0
+set poe interface ge-0/0/1
+set poe interface ge-0/0/2
+set poe interface ge-0/0/3
+
+# Disable PoE on all other ports (power saving)
+set poe interface ge-0/0/4 disable
+set poe interface ge-0/0/5 disable
+set poe interface ge-0/0/6 disable
+set poe interface ge-0/0/7 disable
+set poe interface ge-0/0/8 disable
+set poe interface ge-0/0/9 disable
+set poe interface ge-0/0/10 disable
+set poe interface ge-0/0/11 disable
+set poe interface ge-0/1/0 disable
+set poe interface ge-0/1/1 disable
+
+# ============================================================================
+# PRIVAT VLAN Access Ports (Wired Devices)
+# ============================================================================
+# Wired devices on PRIVAT VLAN (access ports ge-0/0/4 through ge-0/0/9)
+delete interfaces ge-0/0/4
+delete interfaces ge-0/0/5
+delete interfaces ge-0/0/6
+delete interfaces ge-0/0/7
+delete interfaces ge-0/0/8
+delete interfaces ge-0/0/9
+set interfaces ge-0/0/4 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/4 unit 0 family ethernet-switching vlan members PRIVAT
+set interfaces ge-0/0/4 ether-options speed 100m
+set interfaces ge-0/0/4 ether-options link-mode full-duplex
+set interfaces ge-0/0/5 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/5 unit 0 family ethernet-switching vlan members PRIVAT
+set interfaces ge-0/0/5 ether-options speed 100m
+set interfaces ge-0/0/5 ether-options link-mode full-duplex
+set interfaces ge-0/0/6 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/6 unit 0 family ethernet-switching vlan members PRIVAT
+set interfaces ge-0/0/6 ether-options speed 100m
+set interfaces ge-0/0/6 ether-options link-mode full-duplex
+set interfaces ge-0/0/7 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/7 unit 0 family ethernet-switching vlan members PRIVAT
+set interfaces ge-0/0/7 ether-options speed 100m
+set interfaces ge-0/0/7 ether-options link-mode full-duplex
+set interfaces ge-0/0/8 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/8 unit 0 family ethernet-switching vlan members PRIVAT
+set interfaces ge-0/0/8 ether-options speed 100m
+set interfaces ge-0/0/8 ether-options link-mode full-duplex
+set interfaces ge-0/0/9 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/9 unit 0 family ethernet-switching vlan members PRIVAT
+set interfaces ge-0/0/9 ether-options speed 100m
+set interfaces ge-0/0/9 ether-options link-mode full-duplex
+
+# ============================================================================
+# IOT VLAN Access Ports
+# ============================================================================
+# IoT devices on VLAN 20 (access ports ge-0/0/10 through ge-0/0/11)
+delete interfaces ge-0/0/10
+delete interfaces ge-0/0/11
+set interfaces ge-0/0/10 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members IOT
+set interfaces ge-0/0/10 ether-options speed 100m
+set interfaces ge-0/0/10 ether-options link-mode full-duplex
+set interfaces ge-0/0/11 unit 0 family ethernet-switching interface-mode access
+set interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members IOT
+set interfaces ge-0/0/11 ether-options speed 100m
+set interfaces ge-0/0/11 ether-options link-mode full-duplex
+
+# ============================================================================
+# CONFIGURATION COMMANDS END HERE
+# ============================================================================
