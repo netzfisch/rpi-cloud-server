@@ -114,17 +114,6 @@ disk_setup:
         table_type: gpt
         layout: true
         overwrite: false
-fs_setup:
-    - label: ssd1
-      filesystem: ext4
-      device: /dev/sda
-      partition: auto
-      overwrite: false
-    - label: ssd2
-      filesystem: ext4
-      device: /dev/sdb
-      partition: auto
-      overwrite: false
 
 write_files:
   # configure console font
@@ -144,10 +133,11 @@ write_files:
   # configure VLAN network segmentation with netplan
   - path: /etc/netplan/50-cloud-init.yaml
     owner: root:root
-    permissions: '0644'
+    permissions: '0600'
     content: |
       network:
         version: 2
+        renderer: networkd
         ethernets:
           eth0:
             dhcp4: false
@@ -157,7 +147,7 @@ write_files:
               - to: default
                 via: ${GATEWAY_IP}
             nameservers:
-              dns: ${DNS_SERVERS}
+              addresses: [${GATEWAY_IP}, 8.8.8.8]
         vlans:
           eth0.${VLAN_IOT}:
             id: ${VLAN_IOT}
@@ -186,14 +176,20 @@ write_files:
       log-queries
       log-dhcp
 
-      # VLAN IoT
+      # Listen on all relevant interfaces (eth0 for Privat, VLAN interfaces for IoT/Guest)
+      interface=eth0
       interface=eth0.${VLAN_IOT}
+      interface=eth0.${VLAN_GUEST}
+      
+      # Don't bind to wildcard address (security)
+      bind-interfaces
+
+      # VLAN IoT
       dhcp-range=tag:eth0.${VLAN_IOT},${IOT_DHCP_START},${IOT_DHCP_END},24h
       dhcp-option=tag:eth0.${VLAN_IOT},option:router,192.168.${VLAN_IOT}.1
       dhcp-option=tag:eth0.${VLAN_IOT},option:dns-server,${STATIC_IP}
 
       # VLAN Guest
-      interface=eth0.${VLAN_GUEST}
       dhcp-range=tag:eth0.${VLAN_GUEST},${GUEST_DHCP_START},${GUEST_DHCP_END},24h
       dhcp-option=tag:eth0.${VLAN_GUEST},option:router,192.168.${VLAN_GUEST}.1
       dhcp-option=tag:eth0.${VLAN_GUEST},option:dns-server,${STATIC_IP}
@@ -211,6 +207,8 @@ write_files:
       :INPUT ACCEPT [0:0]
       :OUTPUT ACCEPT [0:0]
       :POSTROUTING ACCEPT [0:0]
+      # NAT for Docker containers (docker0 bridge network)
+      -A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE
       # NAT for IoT and Guest VLANs to WAN
       -A POSTROUTING -s 192.168.${VLAN_IOT}.0/24 -o eth0 -j MASQUERADE
       -A POSTROUTING -s 192.168.${VLAN_GUEST}.0/24 -o eth0 -j MASQUERADE
@@ -222,6 +220,9 @@ write_files:
       :OUTPUT ACCEPT [0:0]
       # Allow established connections
       -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+      # Allow Docker container traffic (docker0 bridge)
+      -A FORWARD -i docker0 ! -o docker0 -j ACCEPT
+      -A FORWARD -o docker0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
       # Allow IoT/Guest -> WAN (eth0)
       -A FORWARD -i eth0.${VLAN_IOT} -o eth0 -j ACCEPT
       -A FORWARD -i eth0.${VLAN_GUEST} -o eth0 -j ACCEPT
@@ -229,9 +230,9 @@ write_files:
       -A FORWARD -s 192.168.${VLAN_IOT}.0/24 -d 192.168.${VLAN_IOT}.0/24 -j ACCEPT
       -A FORWARD -s 192.168.${VLAN_GUEST}.0/24 -d 192.168.${VLAN_GUEST}.0/24 -j ACCEPT
       # Block IoT -> Privat
-      -A FORWARD -s 192.168.${VLAN_IOT}.0/24 -d 192.168.${VLAN_PRIVAT}.0/24 -j DROP
+      -A FORWARD -s 192.168.${VLAN_IOT}.0/24 -d 192.168.${PRIVAT_SUBNET_OCTET}.0/24 -j DROP
       # Block Guest -> Privat
-      -A FORWARD -s 192.168.${VLAN_GUEST}.0/24 -d 192.168.${VLAN_PRIVAT}.0/24 -j DROP
+      -A FORWARD -s 192.168.${VLAN_GUEST}.0/24 -d 192.168.${PRIVAT_SUBNET_OCTET}.0/24 -j DROP
       COMMIT
 
   # helper script to display DHCP leases
@@ -263,7 +264,11 @@ write_files:
       set -e
 
       echo "=== Interface status ==="
-      ip -br addr show eth0 eth0.${VLAN_IOT} eth0.${VLAN_GUEST} 2>/dev/null || echo "VLAN interfaces not yet configured"
+      if ip link show eth0.20 >/dev/null 2>&1 && ip link show eth0.30 >/dev/null 2>&1; then
+        ip -br addr show | grep 'eth0' || true
+      else
+        echo "VLAN interfaces not yet configured"
+      fi
 
       echo ""
       echo "=== dnsmasq status ==="
@@ -419,6 +424,18 @@ runcmd:
   - sysctl -w net.ipv4.ip_forward=1
   - grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
   - iptables-restore < /etc/iptables/rules.v4 || true
+  
+  # disable systemd-resolved to free port 53 for dnsmasq
+  - systemctl disable --now systemd-resolved || true
+  - rm -f /etc/resolv.conf
+  - |
+    cat > /etc/resolv.conf << 'EOF'
+    nameserver ${GATEWAY_IP}
+    nameserver 8.8.8.8
+    EOF
+  - chattr +i /etc/resolv.conf || true
+  
+  # start dnsmasq now that port 53 is available
   - systemctl enable --now dnsmasq || true
   - netfilter-persistent save || true
 
@@ -502,29 +519,43 @@ runcmd:
     MOTD_EOF
   - chmod +x /etc/update-motd.d/99-system-status
 
-  # Create RAID1 storage '/dev/md0' from two USB drives, mount to '/mnt/raid1'
-  # ONLY if RAID doesn't already exist (prevents data loss on re-runs)
+  # ========================================================================
+  # RAID1 SETUP - Handles both fresh install and existing array scenarios
+  # ========================================================================
+  # FRESH INSTALL: Create new RAID1 array (only if /dev/md0 doesn't exist)
   - |
     if ! mdadm --detail /dev/md0 >/dev/null 2>&1; then
+      echo ">>> Fresh install detected - creating new RAID1 array"
       # Stop and zero any existing RAID metadata to prevent auto-assembly as md127
       mdadm --stop /dev/md127 2>/dev/null || true
       mdadm --zero-superblock /dev/sda1 /dev/sdb1 2>/dev/null || true
       # Create new RAID1 array
       mdadm --create --run --verbose /dev/md0 --level=1 --raid-devices=2 /dev/sda1 /dev/sdb1
       mkfs.ext4 -F /dev/md0
-      echo "RAID array /dev/md0 created successfully"
+      echo ">>> RAID array /dev/md0 created successfully"
     else
-      echo "RAID array /dev/md0 already exists, skipping creation"
+      echo ">>> Existing RAID array /dev/md0 detected - preserving data"
     fi
+
+  # BOTH SCENARIOS: Mount RAID array
   - mkdir -p /mnt/raid1
   - mount /dev/md0 /mnt/raid1 || true
+
+  # BOTH SCENARIOS: Persist RAID configuration (fstab and mdadm.conf)
   - grep -q '/dev/md0' /etc/fstab || echo '/dev/md0 /mnt/raid1 ext4 defaults,nofail,noatime 0 1' >> /etc/fstab
-  - mdadm --detail --scan | grep -q '/dev/md0' || mdadm --detail --scan >> /etc/mdadm/mdadm.conf
-  - update-initramfs -u
+  - |
+    if ! grep -q '^ARRAY /dev/md' /etc/mdadm/mdadm.conf 2>/dev/null; then
+      mdadm --detail --scan | grep '^ARRAY' >> /etc/mdadm/mdadm.conf
+      update-initramfs -u
+    fi
+
+  # BOTH SCENARIOS: Create share directory structure (mkdir -p is idempotent)
   - mkdir -p /mnt/raid1/${USER1}
   - mkdir -p /mnt/raid1/${USER2}
   - mkdir -p /mnt/raid1/shared
   - mkdir -p /mnt/raid1/public
+
+  # BOTH SCENARIOS: Ensure correct ownership and permissions (always re-applied)
   - chown -R ${USER1}:sambashare /mnt/raid1/${USER1}
   - chown -R ${USER2}:sambashare /mnt/raid1/${USER2}
   - chown -R pirate:sambashare /mnt/raid1/shared
@@ -538,14 +569,12 @@ runcmd:
   - usermod -a -G sambashare ${USER2}
   - (echo ${USER1_SAMBA_PASSWORD}; echo ${USER1_SAMBA_PASSWORD}) | smbpasswd -a ${USER1} -s
   - (echo ${USER2_SAMBA_PASSWORD}; echo ${USER2_SAMBA_PASSWORD}) | smbpasswd -a ${USER2} -s
+  # ========================================================================
+  # RAID1 SETUP - Done
+  # ========================================================================
 
   # set up dynamic DNS updater (wait for Docker to be ready)
-  #- timeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 1; done'
-  - docker run --name ddclient \
-               --env HOSTNAME=${DDNS_HOSTNAME} \
-               --env UPDATE_TOKEN=${DDNS_TOKEN} \
-               --restart unless-stopped \
-               --detach netzfisch/rpi-dyndns
+  - docker run --name ddclient --env HOSTNAME=${DDNS_HOSTNAME} --env UPDATE_TOKEN=${DDNS_TOKEN} --restart unless-stopped --detach netzfisch/rpi-dyndns
 
   # set up Unifi controller
   - mkdir -p /opt/unifi
@@ -585,16 +614,16 @@ final_message: "The system is finally up, after $UPTIME seconds"
 # 1. Wait for RAID sync to complete:
 # $ watch cat /proc/mdstat
 #
-# 2. Clean up auto-generated files:
-# $ sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
-#   /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
-#   /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
-#   /opt/unifi/compose.yml /opt/unifi/unifi.service
+# 2. Unlock the immutable resolv.conf for deletion:
+# $ sudo chattr -i /etc/resolv.conf
 #
-# 3. Stop and remove Docker containers:
+# 3. Clean up ALL auto-generated files and directories:
+# $ sudo rm -rf /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network /etc/update-motd.d/99-system-status /etc/skel/.config/mc/ini /etc/mdadm/mdadm.conf /etc/samba/smb.conf /opt/unifi/compose.yml /opt/unifi/unifi.service
+#
+# 4. Stop and remove Docker containers:
 # $ docker stop ddclient unifi && docker rm ddclient unifi
 #
-# 4. Re-run cloud-init (RAID data will be preserved):
+# 5. Re-run cloud-init (RAID data will be preserved):
 # $ sudo cloud-init clean --logs --reboot
 #
 # The system will reboot and re-apply cloud-init configuration:

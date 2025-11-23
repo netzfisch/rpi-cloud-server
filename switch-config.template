@@ -2,7 +2,7 @@
 # Juniper EX2200-C-12P-2G Switch Configuration
 # ============================================================================
 # Default Credentials: root / (no password)
-# Management IP: Will be assigned via DHCP on VLAN 10 (Privat)
+# Management IP: Will be assigned via DHCP on VLAN 1 (Privat)
 # ============================================================================
 #
 # --- CONNECT WITH `tio` (Terminal I/O) ---
@@ -121,19 +121,22 @@ set system services ssh connection-limit 5
 # ============================================================================
 # VLAN Configuration
 # ============================================================================
-set vlans PRIVAT vlan-id 10
+# Use VLAN 1 for PRIVAT (management) to act as the native VLAN on trunk ports.
+# This is the most compatible way for this switch model.
+set vlans PRIVAT vlan-id 1
 set vlans IOT vlan-id 20
 set vlans GUEST vlan-id 30
 
-# Management interface with DHCP on VLAN 10 (Privat)
-# Note: VLAN must be created before configuring the management interface
-set interfaces vlan unit 10 family inet dhcp
-set vlans PRIVAT l3-interface vlan.10
+# Management interface with DHCP on VLAN 1 (Privat)
+# The switch will get its own IP address from the FritzBox via this interface.
+set interfaces vlan unit 1 family inet dhcp
+set vlans PRIVAT l3-interface vlan.1
 
 # ============================================================================
 # Uplink Configuration
 # ============================================================================
-# Uplink to FritzBox: ge-0/1/1 as access VLAN10 (Privat)
+# Uplink to FritzBox: ge-0/1/1 as an access port on VLAN 1 (PRIVAT).
+# This port carries untagged traffic to and from your main router.
 delete interfaces ge-0/1/1
 set interfaces ge-0/1/1 unit 0 family ethernet-switching interface-mode access
 set interfaces ge-0/1/1 unit 0 family ethernet-switching vlan members PRIVAT
@@ -141,44 +144,42 @@ set interfaces ge-0/1/1 unit 0 family ethernet-switching vlan members PRIVAT
 # ============================================================================
 # Raspberry Pi Trunk Port
 # ============================================================================
-# Raspberry Pi trunk on ge-0/1/0: allow VLANs 10/20/30; native VLAN = 10 (untagged for Pi)
+# Raspberry Pi trunk on ge-0/1/0.
+# Explicitly set native-vlan-id to 1 (PRIVAT) for untagged traffic.
+# Only tagged VLANs (IOT, GUEST) are listed as members.
 delete interfaces ge-0/1/0
-set interfaces ge-0/1/0 native-vlan-id 10
 set interfaces ge-0/1/0 unit 0 family ethernet-switching port-mode trunk
-set interfaces ge-0/1/0 unit 0 family ethernet-switching vlan members 10
-set interfaces ge-0/1/0 unit 0 family ethernet-switching vlan members 20
-set interfaces ge-0/1/0 unit 0 family ethernet-switching vlan members 30
+set interfaces ge-0/1/0 unit 0 family ethernet-switching native-vlan-id 1
+set interfaces ge-0/1/0 unit 0 family ethernet-switching vlan members [ IOT GUEST ]
 
 # ============================================================================
 # UniFi Access Point Trunk Ports (with PoE)
 # ============================================================================
-# UniFi APs as trunk ports on ge-0/0/0 through ge-0/0/3 (tagging 10/20/30)
+# UniFi APs as trunk ports on ge-0/0/0 through ge-0/0/3.
+# Explicitly set native-vlan-id to 1 (PRIVAT) for untagged traffic.
+# Only tagged VLANs (IOT, GUEST) are listed as members.
 delete interfaces ge-0/0/0
 set interfaces ge-0/0/0 unit 0 family ethernet-switching port-mode trunk
-set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members 10
-set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members 20
-set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members 30
+set interfaces ge-0/0/0 unit 0 family ethernet-switching native-vlan-id 1
+set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members [ IOT GUEST ]
 set interfaces ge-0/0/0 ether-options speed 100m
 set interfaces ge-0/0/0 ether-options link-mode full-duplex
 delete interfaces ge-0/0/1
 set interfaces ge-0/0/1 unit 0 family ethernet-switching port-mode trunk
-set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members 10
-set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members 20
-set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members 30
+set interfaces ge-0/0/1 unit 0 family ethernet-switching native-vlan-id 1
+set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members [ IOT GUEST ]
 set interfaces ge-0/0/1 ether-options speed 100m
 set interfaces ge-0/0/1 ether-options link-mode full-duplex
 delete interfaces ge-0/0/2
 set interfaces ge-0/0/2 unit 0 family ethernet-switching port-mode trunk
-set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members 10
-set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members 20
-set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members 30
+set interfaces ge-0/0/2 unit 0 family ethernet-switching native-vlan-id 1
+set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members [ IOT GUEST ]
 set interfaces ge-0/0/2 ether-options speed 100m
 set interfaces ge-0/0/2 ether-options link-mode full-duplex
 delete interfaces ge-0/0/3
 set interfaces ge-0/0/3 unit 0 family ethernet-switching port-mode trunk
-set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members 10
-set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members 20
-set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members 30
+set interfaces ge-0/0/3 unit 0 family ethernet-switching native-vlan-id 1
+set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members [ IOT GUEST ]
 set interfaces ge-0/0/3 ether-options speed 100m
 set interfaces ge-0/0/3 ether-options link-mode full-duplex
 
@@ -207,6 +208,7 @@ set poe interface ge-0/1/1 disable
 # PRIVAT VLAN Access Ports (Wired Devices)
 # ============================================================================
 # Wired devices on PRIVAT VLAN (access ports ge-0/0/4 through ge-0/0/9)
+# These ports carry untagged traffic for the PRIVAT network.
 delete interfaces ge-0/0/4
 delete interfaces ge-0/0/5
 delete interfaces ge-0/0/6
@@ -242,6 +244,7 @@ set interfaces ge-0/0/9 ether-options link-mode full-duplex
 # IOT VLAN Access Ports
 # ============================================================================
 # IoT devices on VLAN 20 (access ports ge-0/0/10 through ge-0/0/11)
+# These ports carry untagged traffic for the IOT network.
 delete interfaces ge-0/0/10
 delete interfaces ge-0/0/11
 set interfaces ge-0/0/10 unit 0 family ethernet-switching interface-mode access
