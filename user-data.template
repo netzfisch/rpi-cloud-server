@@ -184,6 +184,10 @@ write_files:
       # Don't bind to wildcard address (security)
       bind-interfaces
 
+      # NOTE: For (${DOMAIN}) domain resolution to work on your main network, you must
+      # configure your primary router to use this Pi (${STATIC_IP}) as its
+      # local DNS server. See README.md for details.
+
       # VLAN IoT
       dhcp-range=tag:eth0.${VLAN_IOT},${IOT_DHCP_START},${IOT_DHCP_END},24h
       dhcp-option=tag:eth0.${VLAN_IOT},option:router,192.168.${VLAN_IOT}.1
@@ -214,12 +218,17 @@ write_files:
       -A POSTROUTING -s 192.168.${VLAN_GUEST}.0/24 -o eth0 -j MASQUERADE
       COMMIT
 
+      # NOTE: For inter-VLAN routing to work, you must add static routes on your
+      # primary router pointing the VLAN subnets (192.168.20.0/24, 192.168.30.0/24)
+      # to this Pi's IP address (${STATIC_IP}). See README.md for details.
       *filter
       :INPUT ACCEPT [0:0]
       :FORWARD DROP [0:0]
       :OUTPUT ACCEPT [0:0]
       # Allow established connections
       -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+      # Allow Privat -> Internet, IoT, Guest
+      -A FORWARD -s 192.168.${PRIVAT_SUBNET_OCTET}.0/24 -d 0.0.0.0/0 -j ACCEPT
       # Allow Docker container traffic (docker0 bridge)
       -A FORWARD -i docker0 ! -o docker0 -j ACCEPT
       -A FORWARD -o docker0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT

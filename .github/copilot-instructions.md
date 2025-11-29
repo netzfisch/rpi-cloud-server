@@ -57,6 +57,19 @@ cp user-data /media/$USER/system-boot/user-data
 # 4. Boot Pi, monitor provisioning (10-15 min)
 ssh pirate@192.168.1.10
 sudo tail -f /var/log/cloud-init-output.log
+
+# 5. Configure Router (MANDATORY)
+# This step is critical for inter-VLAN routing and local DNS.
+# The main network router must be configured to forward traffic for the
+# VLAN subnets to the Raspberry Pi.
+#
+# a) Add Static Routes:
+#    - Route 1: Network=192.168.20.0/24, Gateway=192.168.10.10
+#    - Route 2: Network=192.168.30.0/24, Gateway=192.168.10.10
+#
+# b) Set Local DNS Server:
+#    - In the router's main LAN DHCP settings, set the DNS server to 192.168.10.10.
+#    - This enables resolution of the .home domain for all clients.
 ```
 
 ### Re-running cloud-init (Safe with RAID Protection)
@@ -109,10 +122,21 @@ mdadm --detail /dev/md0
 
 ### Debugging VLAN Networking
 
+**Primary Check: Main Router Configuration**
+Before debugging on the Pi, verify the main network router has:
+1.  **Static routes** for `192.168.20.0/24` and `192.168.30.0/24` pointing to the Pi's `192.168.10.10`.
+2.  The **Local DNS Server** for the primary LAN set to the Pi's `192.168.10.10`.
+*Failure to do this is the most common cause of network issues.*
+
+**On-Device Diagnostics:**
 ```bash
 # Verify network interfaces and VLAN configuration
 ip addr show
 ip route
+
+# Use mtr to trace network paths and diagnose routing problems
+# (e.g., from a client on the Privat network to a device on the IoT network)
+mtr 192.168.20.184
 
 # Check VLAN interfaces are up
 ip link show eth0

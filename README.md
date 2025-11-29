@@ -67,7 +67,32 @@ $ pv ubuntu-25.10-preinstalled-server-arm64+raspi.img | \
 $ cp user-data /media/$USER/system-boot/user-data
 ```
 
-- Put the SD-Card back into the Raspberry and boot. The server will be **automatically provisioned** and set up - **repeatable and reliable** :-)
+- Put the SD-Card back into the Raspberry and boot. The server will be **automatically provisioned** and set up.
+
+#### Step 4: Configure Your Router
+
+**This step is mandatory for the network features to work correctly.** Your main network router (e.g., FritzBox, Unifi Dream Machine) must be configured to work with the Raspberry Pi's VLANs and DNS server.
+
+1.  **Add Static Routes:**
+    Your router needs to know how to reach the IoT and Guest networks. Add static routes in your router's network settings, pointing to the Raspberry Pi.
+
+    - **IoT Network Route:**
+      - **Network:** `192.168.20.0`
+      - **Subnet Mask:** `255.255.255.0`
+      - **Gateway/Next-Hop:** `192.168.10.10` (the Pi's static IP)
+
+    - **Guest Network Route:**
+      - **Network:** `192.168.30.0`
+      - **Subnet Mask:** `255.255.255.0`
+      - **Gateway/Next-Hop:** `192.168.10.10` (the Pi's static IP)
+
+2.  **Set Local DNS Server:**
+    To resolve local hostnames like `printer.home`, your router must tell clients to use the Raspberry Pi for DNS.
+
+    - In your router's DHCP settings for your main LAN, set the **Local DNS Server** to the Raspberry Pi's static IP (`192.168.10.10`).
+    - After changing this, devices on your network must get a new DHCP lease (e.g., by rebooting them or reconnecting to the network) to receive the new DNS setting.
+
+With these settings, your router will correctly forward traffic to the VLANs and all devices on your main network will be able to use the `.home` domain.
 
 ## Network Topology
 
@@ -122,6 +147,8 @@ The system implements **VLAN-based network segmentation** for enhanced security 
 
 ### Debugging
 
+Before debugging, ensure you have completed the **Router Configuration** steps in this guide. Many network issues are caused by missing static routes or incorrect DNS settings on the main router.
+
 Log into the instance, check the logs at `/var/log/cloud-init-output.log`, and run single commands to verify:
 
     $ sudo cloud-init single --name users --frequency always
@@ -143,6 +170,10 @@ Check VLAN networking:
     $ cat /var/lib/misc/dnsmasq.leases
     $ iptables -L -n -v -t nat
     $ iptables -L -n -v -t filter
+
+Trace network paths to diagnose routing issues:
+
+    $ mtr 192.168.20.184  # Example: trace path to a device on the IoT network
 
 Run comprehensive network diagnostics:
 
