@@ -14,7 +14,7 @@ This is a **cloud-init based provisioning system** for automated Raspberry Pi se
 - `secrets.env` → actual secrets configuration (gitignored, NEVER commit!)
 - `generate-userdata.sh` → validation and generation script
 - `user-data` → generated final configuration (gitignored)
-- `agent.md` → comprehensive technical documentation and procedures
+- `AGENTS.md` → comprehensive technical documentation and procedures
 - `README.md` → quick start guide for end users
 
 ## Key Architecture Decisions
@@ -234,7 +234,7 @@ Configuration is managed via external secrets file:
 - `secrets.env` → actual secrets (gitignored)
 - `generate-userdata.sh` → validation and generation script
 - `user-data` → generated final configuration (gitignored)
-- `agent.md` → comprehensive technical documentation and procedures
+- `AGENTS.md` → comprehensive technical documentation and procedures
 - `README.md` → quick start guide for end users
 - `readme_ubuntu-server.md` → boot partition file descriptions
 
