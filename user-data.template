@@ -318,6 +318,13 @@ write_files:
 
   # configure SAMBA shares
   - content: |
+      [global]
+      workgroup = WORKGROUP
+      server string = liberty23
+      security = user
+      map to guest = Bad User
+      guest account = nobody
+
       [${USER1}]
       path=/mnt/raid1/${USER1}
       create mask=0700
@@ -345,9 +352,11 @@ write_files:
       path=/mnt/raid1/public
       browseable = yes
       writable = yes
-      public = yes
       guest ok = yes
-      map read only = no
+      force user = nobody
+      force group = sambashare
+      create mask = 0664
+      directory mask = 2775
     path: /etc/samba/smb.conf
 
   # configure Unifi Controller docker-compose
@@ -568,6 +577,7 @@ runcmd:
   - chown -R ${USER1}:sambashare /mnt/raid1/${USER1}
   - chown -R ${USER2}:sambashare /mnt/raid1/${USER2}
   - chown -R pirate:sambashare /mnt/raid1/shared
+  - chown -R nobody:sambashare /mnt/raid1/public
   - chmod -R 2770 /mnt/raid1/${USER1}
   - chmod -R 2770 /mnt/raid1/${USER2}
   - chmod -R 2770 /mnt/raid1/shared
