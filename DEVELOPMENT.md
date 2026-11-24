@@ -2,16 +2,16 @@
 
 This document provides deep technical details for the project described in `README.md`. It assumes you are familiar with the project's basic architecture and goals.
 
-**Target OS**: Ubuntu Server 25.10 ARM64+Raspi  
+**Target OS**: Ubuntu Server 26.04 LTS ARM64+Raspi  
 **Cloud-init Version**: 24.x+
 
 ## System Architecture Details
 
 ### Network Configuration
 - **Hostname**: `liberty10` (configurable via `HOSTNAME` in secrets.env)
-- **Static IP**: `192.168.1.10` (configurable via `STATIC_IP` in secrets.env)
-- **Gateway**: `192.168.1.1` (configurable via `GATEWAY_IP` in secrets.env) 
-- **DNS**: `192.168.1.1`, `8.8.8.8` (configurable via `DNS_SERVERS` in secrets.env)
+- **Static IP**: `192.168.10.10` (configurable via `STATIC_IP` in secrets.env)
+- **Gateway**: `192.168.10.1` (configurable via `GATEWAY_IP` in secrets.env) 
+- **DNS**: `192.168.10.1`, `8.8.8.8` (configurable via `DNS_SERVERS` in secrets.env)
 - **Dynamic DNS**: liberty.spdns.eu (configurable via `DDNS_HOSTNAME` in secrets.env)
 
 ### Storage Layout
@@ -40,9 +40,9 @@ The following variables are defined in `secrets.env` and substituted into `user-
 **Note**: The `pirate` admin user has a fixed password `hypriot` which MUST be changed on first SSH login (cloud-init enforces password expiration).
 
 ### Network Configuration
-- **STATIC_IP**: Static IP address for the Pi (e.g., 192.168.1.10)
-- **GATEWAY_IP**: Gateway/router IP address (e.g., 192.168.1.1)
-- **DNS_SERVERS**: Space-separated DNS servers (e.g., "192.168.1.1 8.8.8.8")
+- **STATIC_IP**: Static IP address for the Pi (e.g., 192.168.10.10)
+- **GATEWAY_IP**: Gateway/router IP address (e.g., 192.168.10.1)
+- **DNS_SERVERS**: Space-separated DNS servers (e.g., "[192.168.10.1, 8.8.8.8]")
 
 ### Dynamic DNS Configuration
 - **DDNS_HOSTNAME**: Your dynamic DNS hostname (e.g., homeserver.spdns.eu)
@@ -87,32 +87,35 @@ Three users are configured:
 - docker-buildx-plugin
 - docker-compose-plugin
 
-## Docker Services
+## Services
 
-### 1. Unifi Controller
+### 1. UniFi OS Server (podman, not Docker)
 
-**Purpose**: Manage Unifi network devices (access points, switches, etc.)
+**Purpose**: Manage UniFi network devices (access points, switches, etc.)
 
-**Location**: `/opt/unifi/`
-- `compose.yml` - Docker Compose configuration
-- `unifi.service` - systemd service unit
+Installed by Ubiquiti's official installer (`unifiosinstaller --non-interactive`, URL in
+`UOS_INSTALLER_URL`). It runs as a rootless podman container named `uosserver` under the
+system user `uosserver`. Docker is not involved.
 
-**Container Details:**
-- Image: `ryansch/unifi-rpi:latest`
-- Network: host mode
-- Java Memory: 1024M
-- Volumes: config, logs, run, work directories
+**Location**:
+- `/var/lib/uosserver/` - config (`server.conf`, `portmap.json`), binaries, logs
+- `/home/uosserver/.local/share/containers/` - image and data volumes
+- `/usr/local/bin/uosserver`, `/usr/local/bin/uosserver-purge`
 
-**Access**: 
-- Web UI: https://192.168.1.10:8443
-- Inform: http://192.168.1.10:8080/inform
+**Access**:
+- Web UI: https://192.168.10.10:11443
+- Inform: http://192.168.10.10:8080/inform
 
 **Management:**
 ```bash
-sudo systemctl status unifi
-sudo systemctl restart unifi
-docker logs unifi
+sudo systemctl status uosserver uosserver-updater
+sudo systemctl restart uosserver
+uosserver help
+# Network application log inside the container
+sudo -u uosserver -H bash -c 'cd /tmp && podman exec uosserver tail -f /data/unifi/logs/server.log'
 ```
+
+The installer recommends at least 2 GiB of swap; none is configured by this template.
 
 ### 2. Dynamic DNS Client (ddclient)
 
@@ -169,9 +172,9 @@ Four shares are configured:
    - Access: everyone (guest ok)
 
 **Access from clients:**
-- Windows: `\\192.168.1.10\share_name`
-- macOS: `smb://192.168.1.10/share_name`
-- Linux: `smb://192.168.1.10/share_name` or mount via fstab
+- Windows: `\\192.168.10.10\share_name`
+- macOS: `smb://192.168.10.10/share_name`
+- Linux: `smb://192.168.10.10/share_name` or mount via fstab
 
 ## RAID Configuration
 
@@ -267,11 +270,12 @@ sudo cloud-init single --name disk_setup --frequency always
    watch cat /proc/mdstat
    
    # Stop Docker containers
-   docker stop ddclient unifi && docker rm ddclient unifi
+   docker stop ddclient && docker rm ddclient
    
    # Remove generated configuration files
-   sudo rm -R /etc/dhcpcd.conf /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
-     /opt/unifi/compose.yml /opt/unifi/unifi.service
+   sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
+     /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
+     /etc/mdadm/mdadm.conf /etc/samba/smb.conf
    
    # Clean cloud-init state and reboot
    sudo cloud-init clean --logs --reboot
@@ -301,9 +305,10 @@ sudo mdadm --create --run --verbose /dev/md0 \
 ip addr show eth0
 systemctl status systemd-networkd
 
-# Verify dhcpcd configuration
-cat /etc/dhcpcd.conf
-sudo systemctl restart dhcpcd
+# Verify netplan configuration (static IP and VLAN interfaces)
+sudo cat /etc/netplan/50-cloud-init.yaml
+sudo netplan apply
+sudo check-network
 ```
 
 #### Docker Service Not Starting
@@ -397,7 +402,7 @@ git add user-data.template
 git commit -m "feat: add new Docker service for monitoring"
 
 # Tag releases
-git tag -a v1.2.0 -m "Ubuntu 25.10 with Unifi 8.x support"
+git tag -a v2.0.0 -m "Ubuntu 26.04 LTS with UniFi OS Server"
 ```
 
 ## Future Enhancements
@@ -424,7 +429,7 @@ git tag -a v1.2.0 -m "Ubuntu 25.10 with Unifi 8.x support"
 ### Related Projects
 - [rpi-dyndns](https://github.com/netzfisch/rpi-dyndns) - Dynamic DNS updater
 - [rpi-vpn-server](https://github.com/netzfisch/rpi-vpn-server) - VPN server setup
-- [docker-unifi-rpi](https://github.com/ryansch/docker-unifi-rpi) - Unifi Controller
+- [Self-Hosting UniFi](https://help.ui.com/hc/en-us/articles/34210126298775-Self-Hosting-UniFi) - UniFi OS Server
 
 ### Community Resources
 - [MagPi Magazine NAS Guide](https://magpi.raspberrypi.org/articles/build-a-raspberry-pi-nas)
@@ -444,4 +449,4 @@ For issues with this configuration, check:
 ---
 
 **Document Version**: 2.0  
-**Last Updated**: 2025-10-29
+**Last Updated**: 2026-11-25

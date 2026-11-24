@@ -7,7 +7,7 @@ Inspired by he [The MagPi Magazine](https://magpi.raspberrypi.org/articles/build
 * [cloud-init](https://cloud-init.io/) for automatic **provisioning of customized cloud instances**,
 * [rpi-dyndns](https://github.com/netzfisch/rpi-dyndns) for **dynamic DNS** resolution and
 * [rpi-vpn-server](https://github.com/netzfisch/rpi-vpn-server) to **access the server** from a remote network and
-* based it on **Ubuntu Server 25.10** (ARM64) for **docker host/server** functionality.
+* based it on **Ubuntu Server 26.04 LTS** (ARM64) for **docker host/server** functionality.
 
 If you find this useful, **do not forget to star** the repository ;-)
 
@@ -61,8 +61,8 @@ This will:
 - Flash the SD-Card using `dd` and copy the generated user-data file to the system-boot partition:
 
 ```sh
-$ unxz ubuntu-25.10-preinstalled-server-arm64+raspi.img.xz
-$ pv ubuntu-25.10-preinstalled-server-arm64+raspi.img | \
+$ unxz ubuntu-26.04.1-preinstalled-server-arm64+raspi.img.xz
+$ pv ubuntu-26.04.1-preinstalled-server-arm64+raspi.img | \
   sudo dd iflag=fullblock of=/dev/mmcblk0 bs=64M oflag=direct && sync
 $ cp user-data /media/$USER/system-boot/user-data
 ```
@@ -130,7 +130,8 @@ The system implements **VLAN-based network segmentation** for enhanced security 
   - dnsmasq DHCP/DNS server for IoT and Guest VLANs
   - iptables firewall with NAT and inter-VLAN isolation
   - Samba shares (user1, user2, shared, public)
-  - Docker containers: **Unifi Controller** (network management) and **ddclient** (dynamic DNS)
+  - **UniFi OS Server** (network management, rootless podman container)
+  - Docker container: **ddclient** (dynamic DNS)
   - Custom MOTD with system status display (RAID, Docker, Samba, dnsmasq, DHCP leases)
 - **First login**: SSH as `pirate@192.168.10.10` with password `hypriot`
   - You will be prompted to change the password immediately
@@ -142,7 +143,7 @@ The system implements **VLAN-based network segmentation** for enhanced security 
   - import/generate the secrets for [rpi-vpn-server](https://github.com/netzfisch/rpi-vpn-server), and
   - enable port forwarding at your firewall for the UDP ports 500 and 4500.
 - Access the system via SSH: `ssh pirate@192.168.10.10` (default password: hypriot, must change on first login)
-- Access Unifi Controller web UI: `https://192.168.10.10:8443`
+- Access UniFi OS Server web UI: `https://192.168.10.10:11443`
 - **Done!**
 
 ### Debugging
@@ -202,13 +203,12 @@ The configuration includes **automatic RAID protection** - the RAID array will N
    ```sh
    $ sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
      /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
-     /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
-     /opt/unifi/compose.yml /opt/unifi/unifi.service
+     /etc/mdadm/mdadm.conf /etc/samba/smb.conf
    ```
 
 3. **Stop and remove Docker containers:**
    ```sh
-   $ docker stop ddclient unifi && docker rm ddclient unifi
+   $ docker stop ddclient && docker rm ddclient
    ```
 
 4. **Re-run cloud-init** (RAID data will be preserved):

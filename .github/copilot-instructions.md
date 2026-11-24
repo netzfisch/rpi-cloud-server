@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a **cloud-init based provisioning system** for automated Raspberry Pi server setup using Ubuntu Server 25.10 ARM64. The system creates a headless Docker host with RAID1 storage, Samba shares, and network services.
+This is a **cloud-init based provisioning system** for automated Raspberry Pi server setup using Ubuntu Server 26.04 LTS ARM64. The system creates a headless Docker host with RAID1 storage, Samba shares, and network services.
 
 **Architecture**: Single YAML file (`user-data`) drives complete system provisioning via cloud-init on first boot.
 
@@ -26,7 +26,10 @@ Enables declarative, version-controlled infrastructure. The entire system state 
 Data redundancy for server reliability. Two external USB drives (`/dev/sda`, `/dev/sdb`) mirror data to `/mnt/raid1/`.
 
 ### Why Docker services, not native installs?
-Isolation, easy updates, and portability. Three containers: `unifi` (network controller), `ddclient` (dynamic DNS), `vpnserver` (optional remote access).
+Isolation, easy updates, and portability. Two containers: `ddclient` (dynamic DNS), `vpnserver` (optional remote access).
+
+### Why UniFi OS Server, not a Docker container?
+The community image `ryansch/unifi-rpi` is deprecated. Ubiquiti's official installer runs UniFi OS Server as a rootless **podman** container under its own `uosserver` user (systemd unit `uosserver`). podman coexists with Docker and does not touch iptables.
 
 ### Network Configuration Strategy
 VLAN-based network segmentation using netplan (cloud-init native `network:` module):
@@ -49,13 +52,13 @@ vim secrets.env  # Replace all CHANGE_ME_* values
 ./generate-userdata.sh      # Validates and generates user-data from template
 
 # 3. Flash new SD card
-unxz ubuntu-25.10-preinstalled-server-arm64+raspi.img.xz
-pv ubuntu-25.10-preinstalled-server-arm64+raspi.img | \
+unxz ubuntu-26.04.1-preinstalled-server-arm64+raspi.img.xz
+pv ubuntu-26.04.1-preinstalled-server-arm64+raspi.img | \
   sudo dd iflag=fullblock of=/dev/mmcblk0 bs=64M oflag=direct && sync
 cp user-data /media/$USER/system-boot/user-data
 
 # 4. Boot Pi, monitor provisioning (10-15 min)
-ssh pirate@192.168.1.10
+ssh pirate@192.168.10.10
 sudo tail -f /var/log/cloud-init-output.log
 
 # 5. Configure Router (MANDATORY)
@@ -91,9 +94,8 @@ watch cat /proc/mdstat
 # Clean generated files
 sudo rm -R /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml \
   /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network \
-  /etc/mdadm/mdadm.conf /etc/samba/smb.conf \
-  /opt/unifi/compose.yml /opt/unifi/unifi.service
-docker stop ddclient unifi && docker rm ddclient unifi
+  /etc/mdadm/mdadm.conf /etc/samba/smb.conf
+docker stop ddclient && docker rm ddclient
 
 # Clean cloud-init state and reboot (RAID data will be preserved)
 sudo cloud-init clean --logs --reboot
@@ -169,9 +171,10 @@ cat /proc/sys/net/ipv4/ip_forward
 
 ### File Writing Pattern
 All configuration files use `write_files` module with absolute paths:
-- `/etc/dhcpcd.conf` → static network config
+- `/etc/netplan/50-cloud-init.yaml` → static IP and VLAN interfaces
+- `/etc/dnsmasq.d/${DOMAIN}.conf` → DHCP/DNS for IoT and Guest VLANs
+- `/etc/iptables/rules.v4` → NAT and VLAN isolation
 - `/etc/samba/smb.conf` → share definitions
-- `/opt/unifi/compose.yml` + `unifi.service` → systemd-managed Docker service
 
 ### Command Execution Sequence
 The `runcmd` section follows this order:
@@ -182,7 +185,7 @@ The `runcmd` section follows this order:
 5. Create share directories with correct permissions
 6. Set Samba passwords (piped to `smbpasswd -s`)
 7. Launch Docker containers
-8. Enable systemd services
+8. Install UniFi OS Server (`unifiosinstaller --non-interactive`, skipped if `uosserver` exists)
 
 ### Secrets Management Pattern
 Configuration is managed via external secrets file:
@@ -202,8 +205,8 @@ Configuration is managed via external secrets file:
 ❌ **Don't** leave placeholder credentials (`CHANGE_ME_*`)  
 ✅ **Do** ensure all secrets.env values are real before deployment
 
-❌ **Don't** suggest netplan for network config  
-✅ **Do** modify `/etc/dhcpcd.conf` via `write_files` module in template
+❌ **Don't** suggest dhcpcd or `/etc/network/interfaces` for network config  
+✅ **Do** modify the netplan file (`/etc/netplan/50-cloud-init.yaml`) via `write_files` module in template
 
 ❌ **Don't** set `overwrite: true` on existing RAID partitions  
 ✅ **Do** use `overwrite: false` to preserve data
@@ -216,14 +219,15 @@ Configuration is managed via external secrets file:
 
 ## Integration Points
 
-### Docker Services
-- **unifi**: Web UI at `https://192.168.1.10:8443`, systemd-managed via `/opt/unifi/unifi.service`
+### Services
+- **UniFi OS Server** (podman, not Docker): Web UI at `https://192.168.10.10:11443`, device inform on `:8080`, managed via `systemctl status uosserver` / `uosserver help`
 - **ddclient**: Runs detached, updates `liberty.spdns.eu` with current public IP
 - **vpnserver**: Commented out by default, requires firewall port forwarding (500/udp, 4500/udp)
 
 ### External Dependencies
 - **Securepoint SPDNS**: Dynamic DNS provider (token in user-data)
-- **Docker Hub images**: `ryansch/unifi-rpi`, `netzfisch/rpi-dyndns`, `netzfisch/rpi-vpn-server`
+- **Docker Hub images**: `netzfisch/rpi-dyndns`, `netzfisch/rpi-vpn-server`
+- **UniFi OS Server installer**: version-specific URL in `UOS_INSTALLER_URL` (from https://ui.com/download)
 - **GitHub SSH keys**: Imported via `ssh_import_id: gh:netzfisch`
 
 ## Quick Reference
@@ -236,17 +240,17 @@ Configuration is managed via external secrets file:
 - `user-data` → generated final configuration (gitignored)
 - `AGENTS.md` → comprehensive technical documentation and procedures
 - `README.md` → quick start guide for end users
-- `readme_ubuntu-server.md` → boot partition file descriptions
+- `readme_ubuntu-boot-partition.md` → boot partition file descriptions
 
 ### Key Directories (on target system)
 - `/boot/firmware/` → contains `user-data`, `network-config`, boot files
 - `/mnt/raid1/` → RAID1 mount point with share subdirectories
-- `/opt/unifi/` → Unifi Controller compose + systemd files
+- `/var/lib/uosserver/`, `/home/uosserver/` → UniFi OS Server config and data
 - `/var/log/cloud-init-output.log` → provisioning logs
 
 ### Access Points
 - SSH: `ssh pirate@192.168.10.10` (default password: `hypriot`, expires on first login)
 - Samba: `smb://192.168.10.10/[user1|user2|shared|public]`
-- Unifi: `https://192.168.10.10:8443`
+- UniFi OS Server: `https://192.168.10.10:11443`
 - Hostname: `liberty10.local` (via Avahi mDNS)
 

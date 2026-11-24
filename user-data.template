@@ -95,8 +95,10 @@ packages:
 - mc
 - mdadm
 - net-tools
+- podman
 - samba
 - samba-common-bin
+- slirp4netns
 - tmux
 - vim
 - vlan
@@ -359,64 +361,6 @@ write_files:
       directory mask = 2775
     path: /etc/samba/smb.conf
 
-  # configure Unifi Controller docker-compose
-  - content: |
-      services:
-        unifi:
-          image: ryansch/unifi-rpi:latest
-          container_name: unifi
-          restart: unless-stopped
-          environment:
-            JAVA_OPTS: -Xmx1024M
-          network_mode: host
-          volumes:
-            # Unifi v5.0.7 creates all of these directories (some remain empty)
-            - config:/var/lib/unifi
-            - log:/usr/lib/unifi/logs
-            - log2:/var/log/unifi
-            - run:/usr/lib/unifi/run
-            - run2:/run/unifi
-            - work:/usr/lib/unifi/work
-
-      volumes:
-        config:
-        log:
-        log2:
-        run:
-        run2:
-        work:
-    path: /opt/unifi/compose.yml
-    owner: root:root
-    permissions: '0644'
-
-  # configure Unifi systemd service
-  - content: |
-      [Unit]
-      Description=Unifi Controller
-      After=docker.service
-      BindsTo=docker.service
-
-      [Service]
-      TimeoutStartSec=0
-      TimeoutStopSec=30
-      Restart=always
-      RestartSec=10
-
-      WorkingDirectory=/opt/unifi
-
-      ExecStartPre=-/usr/bin/docker compose kill
-      ExecStartPre=-/usr/bin/docker compose rm -f
-
-      ExecStart=/usr/bin/docker compose up --force-recreate
-
-      ExecStop=/usr/bin/docker compose stop
-
-      [Install]
-      WantedBy=multi-user.target
-    path: /opt/unifi/unifi.service
-    owner: root:root
-    permissions: '0644'
-
   # configure midnight commander with lynx-like motion (system-wide)
   - path: /etc/skel/.config/mc/ini
     content: |
@@ -595,9 +539,16 @@ runcmd:
   # set up dynamic DNS updater (wait for Docker to be ready)
   - docker run --name ddclient --env HOSTNAME=${DDNS_HOSTNAME} --env UPDATE_TOKEN=${DDNS_TOKEN} --restart unless-stopped --detach netzfisch/rpi-dyndns
 
-  # set up Unifi controller
-  - mkdir -p /opt/unifi
-  - systemctl enable --now /opt/unifi/unifi.service
+  # set up UniFi OS Server (runs as rootless podman container, user 'uosserver')
+  # - Web UI: https://${STATIC_IP}:11443, device inform: http://${STATIC_IP}:8080/inform
+  # - skipped when already installed, so existing data survives a cloud-init re-run
+  - |
+    if ! command -v uosserver >/dev/null 2>&1; then
+      curl -fsSL -o /var/tmp/unifiosinstaller "${UOS_INSTALLER_URL}"
+      chmod +x /var/tmp/unifiosinstaller
+      /var/tmp/unifiosinstaller --non-interactive
+      rm -f /var/tmp/unifiosinstaller
+    fi
 
   # set up VPN server
   #- docker run --name vpnserver \
@@ -620,13 +571,13 @@ final_message: "The system is finally up, after $UPTIME seconds"
 # destroying existing RAID arrays when re-running cloud-init. The disk_setup and fs_setup
 # modules use "overwrite: false" to skip partition/filesystem creation on existing drives.
 #
-# DOCKER VOLUME PERSISTENCE:
-# Docker named volumes (Unifi config, logs, etc.) persist automatically when containers
-# are removed. The cleanup procedure removes containers but NOT volumes, preserving all
-# Unifi settings, devices, and network configurations across cloud-init re-runs.
-# - To verify: docker volume ls | grep unifi
-# - To inspect: docker volume inspect unifi_config
-# - To reset Unifi (DESTRUCTIVE): docker volume rm unifi_config unifi_log unifi_log2 unifi_run unifi_run2 unifi_work
+# UNIFI OS SERVER PERSISTENCE:
+# UniFi OS Server keeps its data in podman volumes of the 'uosserver' user
+# (/home/uosserver/.local/share/containers) and its config in /var/lib/uosserver.
+# The cleanup procedure below does not touch them, and runcmd skips the install when
+# 'uosserver' already exists, so settings and devices survive cloud-init re-runs.
+# - To verify: systemctl status uosserver
+# - To reset UniFi (DESTRUCTIVE): sudo uosserver-purge
 #
 # To RE-RUN cloud-init without losing data:
 #
@@ -637,10 +588,10 @@ final_message: "The system is finally up, after $UPTIME seconds"
 # $ sudo chattr -i /etc/resolv.conf
 #
 # 3. Clean up ALL auto-generated files and directories:
-# $ sudo rm -rf /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network /etc/update-motd.d/99-system-status /etc/skel/.config/mc/ini /etc/mdadm/mdadm.conf /etc/samba/smb.conf /opt/unifi/compose.yml /opt/unifi/unifi.service
+# $ sudo rm -rf /etc/dnsmasq.d/*.conf /etc/iptables/rules.v4 /etc/netplan/50-cloud-init.yaml /usr/local/bin/show-dhcp-leases /usr/local/bin/check-network /etc/update-motd.d/99-system-status /etc/skel/.config/mc/ini /etc/mdadm/mdadm.conf /etc/samba/smb.conf
 #
 # 4. Stop and remove Docker containers:
-# $ docker stop ddclient unifi && docker rm ddclient unifi
+# $ docker stop ddclient && docker rm ddclient
 #
 # 5. Re-run cloud-init (RAID data will be preserved):
 # $ sudo cloud-init clean --logs --reboot

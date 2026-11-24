@@ -60,6 +60,7 @@ REQUIRED_VARS=(
     DOMAIN
     DDNS_HOSTNAME
     DDNS_TOKEN
+    UOS_INSTALLER_URL
 )
 
 # ========================================================================
