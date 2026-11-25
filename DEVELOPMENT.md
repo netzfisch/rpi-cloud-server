@@ -44,6 +44,15 @@ The following variables are defined in `secrets.env` and substituted into `user-
 - **GATEWAY_IP**: Gateway/router IP address (e.g., 192.168.10.1)
 - **DNS_SERVERS**: Space-separated DNS servers (e.g., "[192.168.10.1, 8.8.8.8]")
 
+### Local DNS Names
+- **DOMAIN**: Local domain served by dnsmasq (e.g., home)
+- **LOCAL_DNS_HOSTS**: Space-separated `name=ip` pairs (e.g., "gate1=192.168.10.1 nas=192.168.10.10").
+  `runcmd` turns each pair into a `host-record` line in `/etc/dnsmasq.d/hosts.conf`, so the name
+  resolves as `<name>` and `<name>.<DOMAIN>`. Devices carry the last IP octet, services do not.
+
+### UniFi OS Server
+- **UOS_INSTALLER_URL**: Version-specific download URL of the Linux arm64 installer (from https://ui.com/download)
+
 ### Dynamic DNS Configuration
 - **DDNS_HOSTNAME**: Your dynamic DNS hostname (e.g., homeserver.spdns.eu)
 - **DDNS_TOKEN**: Update token from your DDNS provider
@@ -115,7 +124,8 @@ uosserver help
 sudo -u uosserver -H bash -c 'cd /tmp && podman exec uosserver tail -f /data/unifi/logs/server.log'
 ```
 
-The installer recommends at least 2 GiB of swap; none is configured by this template.
+The installer recommends at least 2 GiB of swap. The template provides it as zram, see
+[Swap (zram)](#swap-zram).
 
 ### 2. Dynamic DNS Client (ddclient)
 
@@ -146,6 +156,28 @@ docker restart ddclient
 1. Uncomment the runcmd line in user-data.template
 2. Generate VPN secrets (see rpi-vpn-server documentation)
 3. Configure firewall port forwarding
+
+## Swap (zram)
+
+2 GiB of compressed swap in RAM via `systemd-zram-generator`. Nothing is written to the SD
+card; under memory pressure the kernel compresses pages instead of killing a process.
+
+**Configuration**: `/etc/systemd/zram-generator.conf`
+```ini
+[zram0]
+zram-size = min(ram, 2048)
+compression-algorithm = zstd
+```
+
+**Management:**
+```bash
+swapon --show          # /dev/zram0, 2G
+zramctl                # compression ratio
+```
+
+To change the size, edit the file, then `sudo systemctl stop dev-zram0.swap`,
+`sudo zramctl --reset /dev/zram0`, `sudo systemctl daemon-reload` and
+`sudo systemctl start dev-zram0.swap`. Without the reset the device reports "busy".
 
 ## Samba Shares
 

@@ -31,7 +31,9 @@ $ cp secrets.env.example secrets.env
   - User credentials (admin password, Samba passwords)
   - Network settings (static IP, gateway, DNS servers)
   - VLAN configuration (VLAN IDs, DHCP ranges, upstream DNS server)
+  - Local DNS names for devices and services (`LOCAL_DNS_HOSTS`)
   - Dynamic DNS hostname and token
+  - Download URL of the UniFi OS Server installer (`UOS_INSTALLER_URL`)
 
 **IMPORTANT:** Never commit `secrets.env` to version control - it's already in `.gitignore`.
 
@@ -87,12 +89,20 @@ $ cp user-data /media/$USER/system-boot/user-data
       - **Gateway/Next-Hop:** `192.168.10.10` (the Pi's static IP)
 
 2.  **Set Local DNS Server:**
-    To resolve local hostnames like `printer.home`, your router must tell clients to use the Raspberry Pi for DNS.
+    To resolve local hostnames like `nas.home`, your router must tell clients to use the Raspberry Pi for DNS.
 
     - In your router's DHCP settings for your main LAN, set the **Local DNS Server** to the Raspberry Pi's static IP (`192.168.10.10`).
     - After changing this, devices on your network must get a new DHCP lease (e.g., by rebooting them or reconnecting to the network) to receive the new DNS setting.
 
 With these settings, your router will correctly forward traffic to the VLANs and all devices on your main network will be able to use the `.home` domain.
+
+**Local DNS names** come from `LOCAL_DNS_HOSTS` in `secrets.env`, a space-separated list of `name=ip` pairs. Each name resolves as `<name>` and `<name>.<DOMAIN>`. Convention: devices carry the last IP octet (`gate1`, `pi10`), services do not (`nas`, `unifi`), so a service can move to another device without changing its name.
+
+    $ dig @192.168.10.10 +short unifi.home
+    $ smb://nas/shared            # Samba
+    $ https://unifi:11443         # UniFi OS Server
+
+VPN clients only see these names if their tunnel uses the Pi as DNS server and `<DOMAIN>` as search domain.
 
 ## Network Topology
 
@@ -127,7 +137,8 @@ The system implements **VLAN-based network segmentation** for enhanced security 
     - **Note**: The provisioning script handles all RAID scenarios (fresh disks, existing arrays, or reused drives) by automatically cleaning any previous RAID metadata before creating the array. This ensures the RAID is always created as `md0` instead of auto-assembling as `md127`.
     - **CRITICAL WARNING**: Setting `fs_setup: overwrite: true` will destroy RAID data! Always set `overwrite: false` for existing partitions.
   - VLAN networking with netplan (Privat/IoT/Guest segmentation)
-  - dnsmasq DHCP/DNS server for IoT and Guest VLANs
+  - dnsmasq DHCP/DNS server for IoT and Guest VLANs, plus local DNS names for devices and services
+  - 2 GiB compressed swap in RAM (zram), so the SD card is not used for swapping
   - iptables firewall with NAT and inter-VLAN isolation
   - Samba shares (user1, user2, shared, public)
   - **UniFi OS Server** (network management, rootless podman container)

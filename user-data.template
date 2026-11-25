@@ -23,8 +23,8 @@
 # Flash the SD-Card and copy this file to the system-boot partition before
 # boot the RaspberryPi:
 #
-# $ unxz ubuntu-25.10-preinstalled-server-arm64+raspi.img.xz
-# $ pv ubuntu-25.10-preinstalled-server-arm64+raspi.img.img \
+# $ unxz ubuntu-26.04.1-preinstalled-server-arm64+raspi.img.xz
+# $ pv ubuntu-26.04.1-preinstalled-server-arm64+raspi.img.img \
 # | sudo dd iflag=fullblock of=/dev/mmcblk0 bs=64M oflag=direct5-10-01-raspios-trixie-arm64-lite.img -B 16m \
 # | sudo dd iflag=fullblock of=/dev/sda bs=64M oflag=direct && sync
 # $ cp user-data.yaml /media/$USER/system-boot/user-data
@@ -99,6 +99,7 @@ packages:
 - samba
 - samba-common-bin
 - slirp4netns
+- systemd-zram-generator
 - tmux
 - vim
 - vlan
@@ -361,6 +362,15 @@ write_files:
       directory mask = 2775
     path: /etc/samba/smb.conf
 
+  # configure compressed swap in RAM (zram): no SD card wear, absorbs memory spikes
+  - path: /etc/systemd/zram-generator.conf
+    content: |
+      [zram0]
+      zram-size = min(ram, 2048)
+      compression-algorithm = zstd
+    owner: root:root
+    permissions: '0644'
+
   # configure midnight commander with lynx-like motion (system-wide)
   - path: /etc/skel/.config/mc/ini
     content: |
@@ -397,6 +407,13 @@ runcmd:
     EOF
   - chattr +i /etc/resolv.conf || true
   
+  # local DNS names for devices and services (LOCAL_DNS_HOSTS: "name=ip name=ip ...")
+  - |
+    : > /etc/dnsmasq.d/hosts.conf
+    for entry in ${LOCAL_DNS_HOSTS}; do
+      printf 'host-record=%s,%s.${DOMAIN},%s\n' "${entry%%=*}" "${entry%%=*}" "${entry##*=}" >> /etc/dnsmasq.d/hosts.conf
+    done
+
   # start dnsmasq now that port 53 is available
   - systemctl enable --now dnsmasq || true
   - netfilter-persistent save || true
@@ -538,6 +555,10 @@ runcmd:
 
   # set up dynamic DNS updater (wait for Docker to be ready)
   - docker run --name ddclient --env HOSTNAME=${DDNS_HOSTNAME} --env UPDATE_TOKEN=${DDNS_TOKEN} --restart unless-stopped --detach netzfisch/rpi-dyndns
+
+  # activate zram swap now (on later boots the systemd generator does this)
+  - systemctl daemon-reload
+  - systemctl start dev-zram0.swap || true
 
   # set up UniFi OS Server (runs as rootless podman container, user 'uosserver')
   # - Web UI: https://${STATIC_IP}:11443, device inform: http://${STATIC_IP}:8080/inform
