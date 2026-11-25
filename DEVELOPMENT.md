@@ -343,6 +343,36 @@ sudo netplan apply
 sudo check-network
 ```
 
+#### VLAN Routing or DNS Not Working
+
+Check the main router first; it is the most common cause:
+1. Static routes for `192.168.20.0/24` and `192.168.30.0/24` point to the Pi.
+2. The local DNS server handed out by DHCP is the Pi.
+
+Then on the Pi:
+```bash
+# All checks in one go: interfaces, dnsmasq, forwarding, NAT, DNS, gateway
+sudo check-network
+
+# VLAN interfaces and routes
+ip -br addr show
+ip route
+
+# NAT and isolation rules
+sudo iptables -L -n -v -t nat
+sudo iptables -L -n -v -t filter
+
+# dnsmasq: service, leases, local names
+systemctl status dnsmasq
+show-dhcp-leases
+cat /etc/dnsmasq.d/hosts.conf
+dig @localhost example.com
+journalctl -u dnsmasq -n 50
+
+# Trace the path from a Privat client to an IoT device
+mtr 192.168.20.184
+```
+
 #### Docker Service Not Starting
 ```bash
 # Check Docker status
